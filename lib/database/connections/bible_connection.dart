@@ -22,6 +22,6 @@ LazyDatabase openBibleConnection() {
       mode: sqlite.OpenMode.readOnly,
     );
 
-    return NativeDatabase.opened(database);
+    return NativeDatabase.opened(database, enableMigrations: false);
   });
 }

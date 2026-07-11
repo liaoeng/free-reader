@@ -10,6 +10,8 @@ pubspec.lock
 .gradle/
 android/.gradle/
 android/local.properties
+android/key.properties
+android/app/*.jks
 android/app/build/
 
 # IDE
