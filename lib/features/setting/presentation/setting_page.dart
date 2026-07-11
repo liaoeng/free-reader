@@ -79,7 +79,7 @@ class _SettingContent extends ConsumerWidget {
         const SizedBox(height: 12),
         Card(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

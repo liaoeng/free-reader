@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:free_reader/features/home/providers/home_providers.dart';
 import 'package:free_reader/features/home/providers/recent_reading.dart';
+import 'package:free_reader/features/reader/presentation/reader_page.dart';
 
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
@@ -63,7 +64,18 @@ class _RecentReadingCard extends StatelessWidget {
         title: Text(value.title),
         subtitle: Text('上次阅读 ${_formatReadTime(value.progress.lastReadTime)}'),
         trailing: FilledButton.icon(
-          onPressed: () => _showReaderPending(context),
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ReaderPage(
+                  initialVolumeSn: value.progress.volumeSn,
+                  initialChapterSn: value.progress.chapterSn,
+                  initialVerseSn: value.progress.verseSn,
+                  initialScrollOffset: value.progress.scrollOffset,
+                ),
+              ),
+            );
+          },
           icon: const Icon(Icons.play_arrow),
           label: const Text('继续'),
         ),
@@ -78,12 +90,6 @@ class _RecentReadingCard extends StatelessWidget {
   }
 
   static String _twoDigits(int value) => value.toString().padLeft(2, '0');
-
-  static void _showReaderPending(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('阅读页将在下一阶段接入')),
-    );
-  }
 }
 
 class _LoadingCard extends StatelessWidget {
