@@ -6,7 +6,8 @@ part 'bible_database.g.dart';
 
 @DriftDatabase(tables: [BibleBooks, BibleVerses])
 class BibleDatabase extends _$BibleDatabase {
-  BibleDatabase() : super(openBibleConnection());
+  BibleDatabase({String? filePath})
+      : super(openBibleConnection(filePath: filePath));
 
   @override
   int get schemaVersion => 1;

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:free_reader/core/theme/theme_mode_codec.dart';
+import 'package:free_reader/features/backup/providers/backup_providers.dart';
 import 'package:free_reader/features/setting/providers/setting_providers.dart';
 
 class SettingPage extends ConsumerWidget {
@@ -52,7 +53,7 @@ class SettingPage extends ConsumerWidget {
   }
 }
 
-class _SettingContent extends ConsumerWidget {
+class _SettingContent extends ConsumerStatefulWidget {
   const _SettingContent({
     required this.darkModeEnabled,
     required this.fontSize,
@@ -62,7 +63,14 @@ class _SettingContent extends ConsumerWidget {
   final double fontSize;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SettingContent> createState() => _SettingContentState();
+}
+
+class _SettingContentState extends ConsumerState<_SettingContent> {
+  bool _exporting = false;
+
+  @override
+  Widget build(BuildContext context) {
     final controller = ref.watch(settingControllerProvider);
 
     return Column(
@@ -72,7 +80,7 @@ class _SettingContent extends ConsumerWidget {
           child: SwitchListTile(
             secondary: const Icon(Icons.dark_mode_outlined),
             title: const Text('深色模式'),
-            value: darkModeEnabled,
+            value: widget.darkModeEnabled,
             onChanged: controller.setDarkModeEnabled,
           ),
         ),
@@ -93,20 +101,20 @@ class _SettingContent extends ConsumerWidget {
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
-                    Text(fontSize.toStringAsFixed(0)),
+                    Text(widget.fontSize.toStringAsFixed(0)),
                   ],
                 ),
                 Slider(
                   min: 14,
                   max: 28,
                   divisions: 14,
-                  value: fontSize.clamp(14, 28).toDouble(),
+                  value: widget.fontSize.clamp(14, 28).toDouble(),
                   onChanged: controller.setFontSize,
                 ),
                 Text(
                   '起初，神创造天地。',
                   style: TextStyle(
-                    fontSize: fontSize,
+                    fontSize: widget.fontSize,
                     height: 1.7,
                   ),
                 ),
@@ -114,7 +122,47 @@ class _SettingContent extends ConsumerWidget {
             ),
           ),
         ),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            leading: _exporting
+                ? const SizedBox.square(
+                    dimension: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.inventory_2_outlined),
+            title: const Text('导出备份'),
+            subtitle: const Text('.frpkg，包含资源、阅读记录和设置'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _exporting ? null : _exportBackup,
+          ),
+        ),
       ],
     );
+  }
+
+  Future<void> _exportBackup() async {
+    setState(() => _exporting = true);
+
+    try {
+      final file = await ref.read(backupExportServiceProvider).exportAll();
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出完成：${file.path}')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败：$error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _exporting = false);
+      }
+    }
   }
 }

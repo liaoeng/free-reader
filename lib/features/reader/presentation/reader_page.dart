@@ -4,19 +4,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:free_reader/core/theme/app_dimens.dart';
 import 'package:free_reader/database/bible_database.dart';
+import 'package:free_reader/features/reader/data/bible_sqlite_reader.dart';
+import 'package:free_reader/features/reader/data/tts_service.dart';
 import 'package:free_reader/features/reader/domain/reading_location.dart';
 import 'package:free_reader/features/reader/providers/reader_providers.dart';
+import 'package:free_reader/features/resources/domain/resource_constants.dart';
 import 'package:free_reader/features/setting/providers/setting_providers.dart';
 
 class ReaderPage extends ConsumerStatefulWidget {
   const ReaderPage({
     super.key,
+    this.resourceId = ResourceConstants.builtinBibleId,
     this.initialVolumeSn = 1,
     this.initialChapterSn = 1,
     this.initialVerseSn = 1,
     this.initialScrollOffset = 0,
   });
 
+  final String resourceId;
   final int initialVolumeSn;
   final int initialChapterSn;
   final int initialVerseSn;
@@ -41,6 +46,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   bool _restoredInitialOffset = false;
   bool _ignoreScrollUntilNextFrame = false;
   bool _showControls = false;
+  bool _isSpeaking = false;
   int _chapterDirection = 1;
 
   @override
@@ -52,24 +58,48 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     _pendingRestoreOffset = widget.initialScrollOffset;
     _chapter = _loadChapter(saveInitialProgress: false);
     _scrollController.addListener(_scheduleProgressSave);
+    ref.read(ttsServiceProvider).setProgressListener(_handleTtsProgress);
   }
 
   @override
   void dispose() {
     _saveProgressTimer?.cancel();
     _saveProgressNow();
+    final tts = ref.read(ttsServiceProvider);
+    tts.setProgressListener(null);
+    tts.stop();
     _scrollController.dispose();
     super.dispose();
   }
 
   Future<_ReaderChapter> _loadChapter({bool saveInitialProgress = true}) async {
-    final bibleRepository = ref.read(bibleRepositoryProvider);
-    final books = await bibleRepository.watchableBooksSnapshot();
-    final book = await bibleRepository.getBook(_volumeSn);
-    final verses = await bibleRepository.getChapter(
-      volumeSn: _volumeSn,
-      chapterSn: _chapterSn,
-    );
+    final resource = await ref
+        .read(resourceRepositoryProvider)
+        .getResource(widget.resourceId);
+    if (resource == null) {
+      throw StateError('Resource not found: ${widget.resourceId}');
+    }
+
+    final reader = ref.read(resourceReaderFactoryProvider).create(resource);
+    if (reader is! BibleSqliteReader) {
+      throw UnsupportedError('Reader page only supports Bible resources now.');
+    }
+
+    await reader.open();
+    late final List<BibleBookRecord> books;
+    late final BibleBookRecord? book;
+    late final List<BibleVerseRecord> verses;
+    try {
+      books = await reader.getBooksSnapshot();
+      book = await reader.getBook(_volumeSn);
+      verses = await reader.getChapter(
+        volumeSn: _volumeSn,
+        chapterSn: _chapterSn,
+      );
+    } finally {
+      await reader.close();
+    }
+
     _currentVerses = verses;
     _verseKeys
       ..clear()
@@ -80,6 +110,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     if (saveInitialProgress && verses.isNotEmpty) {
       await ref.read(readingProgressRepositoryProvider).saveCurrentLocation(
             ReadingLocation(
+              resourceId: widget.resourceId,
               volumeSn: _volumeSn,
               chapterSn: _chapterSn,
               verseSn: verses.first.verseSn,
@@ -134,6 +165,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   }) {
     _saveProgressTimer?.cancel();
     _saveProgressNow();
+    if (_isSpeaking) {
+      ref.read(ttsServiceProvider).stop();
+    }
 
     setState(() {
       _volumeSn = volumeSn;
@@ -142,6 +176,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       _pendingRestoreOffset = scrollOffset;
       _restoredInitialOffset = false;
       _showControls = false;
+      _isSpeaking = false;
       _chapterDirection = direction == 0 ? 1 : direction;
       _chapter = _loadChapter();
     });
@@ -228,12 +263,25 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
 
     await ref.read(readingProgressRepositoryProvider).saveCurrentLocation(
           ReadingLocation(
+            resourceId: widget.resourceId,
             volumeSn: _volumeSn,
             chapterSn: _chapterSn,
             verseSn: _verseSn,
             scrollOffset: offset,
+            progressPercent: _chapterProgress(offset),
           ),
         );
+  }
+
+  double _chapterProgress(double offset) {
+    if (!_scrollController.hasClients) {
+      return 0;
+    }
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    if (maxScroll <= 0) {
+      return 1;
+    }
+    return (offset / maxScroll).clamp(0.0, 1.0);
   }
 
   int? _findVerseNearViewportCenter() {
@@ -313,6 +361,71 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     );
   }
 
+  Future<void> _toggleReadAloud(_ReaderChapter chapter) async {
+    final tts = ref.read(ttsServiceProvider);
+
+    if (_isSpeaking) {
+      await tts.stop();
+      if (mounted) {
+        setState(() => _isSpeaking = false);
+      }
+      return;
+    }
+
+    final startVerseSn = _findVerseNearViewportCenter() ??
+        _estimateVisibleVerse(
+          _scrollController.hasClients ? _scrollController.offset : 0,
+        );
+    _verseSn = startVerseSn;
+    await _saveProgressNow();
+
+    final segments = [
+      for (final verse in chapter.verses)
+        if (verse.verseSn >= startVerseSn)
+          TtsSegment(
+            id: '$_volumeSn:$_chapterSn:${verse.verseSn}',
+            text: verse.lection ?? '',
+          ),
+    ].where((segment) => segment.text.trim().isNotEmpty).toList();
+    if (segments.isEmpty) {
+      return;
+    }
+
+    await tts.speakSegments(segments);
+    if (mounted) {
+      setState(() => _isSpeaking = true);
+    }
+  }
+
+  void _handleTtsProgress(TtsProgress progress) {
+    final parts = progress.segmentId.split(':');
+    if (parts.length != 3) {
+      return;
+    }
+
+    final volumeSn = int.tryParse(parts[0]);
+    final chapterSn = int.tryParse(parts[1]);
+    final verseSn = int.tryParse(parts[2]);
+    if (volumeSn == null || chapterSn == null || verseSn == null) {
+      return;
+    }
+
+    _verseSn = verseSn;
+    ref.read(readingProgressRepositoryProvider).saveCurrentLocation(
+          ReadingLocation(
+            resourceId: widget.resourceId,
+            volumeSn: volumeSn,
+            chapterSn: chapterSn,
+            verseSn: verseSn,
+            scrollOffset:
+                _scrollController.hasClients ? _scrollController.offset : 0,
+            progressPercent: _chapterProgress(
+              _scrollController.hasClients ? _scrollController.offset : 0,
+            ),
+          ),
+        );
+  }
+
   void _handleReaderTap(TapUpDetails details) {
     final screenHeight = MediaQuery.sizeOf(context).height;
     final tapY = details.globalPosition.dy;
@@ -346,33 +459,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                 controller: _scrollController,
                 slivers: [
                   SliverAppBar(
+                    automaticallyImplyLeading: false,
                     toolbarHeight: AppDimens.appBarHeight,
-                    leading: IconButton(
-                      tooltip: '\u8fd4\u56de',
-                      onPressed: () => Navigator.of(context).maybePop(),
-                      icon: const Icon(Icons.arrow_back),
-                    ),
                     title: _ReaderTitle(chapter: chapter),
-                    floating: true,
-                    actions: [
-                      IconButton(
-                        tooltip: '\u76ee\u5f55',
-                        onPressed:
-                            chapter == null ? null : () => _showIndex(chapter),
-                        icon: const Icon(Icons.list_alt_outlined),
-                      ),
-                      IconButton(
-                        tooltip: '\u5b57\u53f7',
-                        onPressed: _showTextSettings,
-                        icon: const Text(
-                          'Aa',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
+                    titleSpacing: AppDimens.pagePaddingX,
+                    centerTitle: false,
+                    pinned: true,
                   ),
                   if (snapshot.connectionState == ConnectionState.waiting)
                     const SliverFillRemaining(
@@ -454,10 +546,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
 
                   return _ReaderControls(
                     enabled: chapter != null,
+                    isSpeaking: _isSpeaking,
                     onPrevious: chapter == null
                         ? null
                         : () => _openPreviousChapter(chapter),
                     onIndex: chapter == null ? null : () => _showIndex(chapter),
+                    onReadAloud: chapter == null
+                        ? null
+                        : () => _toggleReadAloud(chapter),
+                    onTextSettings: _showTextSettings,
                     onNext: chapter == null
                         ? null
                         : () => _openNextChapter(chapter),
@@ -479,30 +576,33 @@ class _ReaderTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final bookName = chapter?.bookName ?? '\u5723\u7ecf';
-    final chapterLabel = chapter?.chapterLabel ?? '';
+    final title = chapter?.title ?? '\u5723\u7ecf';
 
-    return Column(
+    return Row(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          bookName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: textTheme.titleLarge?.copyWith(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w700,
+        Container(
+          width: 3,
+          height: 20,
+          decoration: BoxDecoration(
+            color: colorScheme.primary,
+            borderRadius: BorderRadius.circular(99),
           ),
         ),
-        if (chapterLabel.isNotEmpty)
-          Text(
-            chapterLabel,
-            style: textTheme.bodySmall?.copyWith(
+        const SizedBox(width: 10),
+        Flexible(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: textTheme.bodyMedium?.copyWith(
               color: colorScheme.onSurfaceVariant,
-              height: 1.2,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              height: 1.1,
             ),
           ),
+        ),
       ],
     );
   }
@@ -592,14 +692,20 @@ class _VerseLine extends StatelessWidget {
 class _ReaderControls extends StatelessWidget {
   const _ReaderControls({
     required this.enabled,
+    required this.isSpeaking,
     required this.onPrevious,
     required this.onIndex,
+    required this.onReadAloud,
+    required this.onTextSettings,
     required this.onNext,
   });
 
   final bool enabled;
+  final bool isSpeaking;
   final VoidCallback? onPrevious;
   final VoidCallback? onIndex;
+  final VoidCallback? onReadAloud;
+  final VoidCallback onTextSettings;
   final VoidCallback? onNext;
 
   @override
@@ -618,35 +724,78 @@ class _ReaderControls extends StatelessWidget {
           height: AppDimens.bottomBarHeight,
           child: Row(
             children: [
-              Expanded(
-                child: TextButton.icon(
-                  onPressed: enabled ? onPrevious : null,
-                  icon: const Icon(Icons.chevron_left),
-                  label: const Text('\u4e0a\u4e00\u7ae0'),
-                ),
+              _ToolbarButton(
+                icon: Icons.chevron_left,
+                label: '\u4e0a\u4e00\u7ae0',
+                onPressed: enabled ? onPrevious : null,
               ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 7),
-                  child: FilledButton.icon(
-                    onPressed: enabled ? onIndex : null,
-                    icon: const Icon(Icons.list_alt_outlined),
-                    label: const Text('\u76ee\u5f55'),
-                  ),
-                ),
+              _ToolbarButton(
+                icon: Icons.list_alt_outlined,
+                label: '\u76ee\u5f55',
+                onPressed: enabled ? onIndex : null,
               ),
-              Expanded(
-                child: TextButton.icon(
-                  onPressed: enabled ? onNext : null,
-                  iconAlignment: IconAlignment.end,
-                  icon: const Icon(Icons.chevron_right),
-                  label: const Text('\u4e0b\u4e00\u7ae0'),
-                ),
+              _ToolbarButton(
+                icon: isSpeaking
+                    ? Icons.stop_circle_outlined
+                    : Icons.volume_up_outlined,
+                label: isSpeaking ? '\u505c\u6b62' : '\u6717\u8bfb',
+                onPressed: enabled ? onReadAloud : null,
+              ),
+              _ToolbarButton(
+                label: 'Aa',
+                onPressed: onTextSettings,
+              ),
+              _ToolbarButton(
+                icon: Icons.chevron_right,
+                iconAlignment: IconAlignment.end,
+                label: '\u4e0b\u4e00\u7ae0',
+                onPressed: enabled ? onNext : null,
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ToolbarButton extends StatelessWidget {
+  const _ToolbarButton({
+    required this.label,
+    required this.onPressed,
+    this.icon,
+    this.iconAlignment = IconAlignment.start,
+  });
+
+  final String label;
+  final VoidCallback? onPressed;
+  final IconData? icon;
+  final IconAlignment iconAlignment;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextButton.styleFrom(
+      minimumSize: const Size(0, 48),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+    );
+
+    return Expanded(
+      child: icon == null
+          ? TextButton(
+              onPressed: onPressed,
+              style: style,
+              child: Text(label),
+            )
+          : TextButton.icon(
+              onPressed: onPressed,
+              style: style,
+              iconAlignment: iconAlignment,
+              icon: Icon(icon),
+              label: Text(label),
+            ),
     );
   }
 }
@@ -1049,6 +1198,7 @@ class _ReaderChapter {
 
   String get bookName => book?.fullName ?? book?.shortName ?? '\u5723\u7ecf';
   String get chapterLabel => '\u7b2c$chapterSn\u7ae0';
+  String get title => '$bookName · $chapterLabel';
 }
 
 class _ChapterSelection {

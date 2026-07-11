@@ -1,17 +1,18 @@
-import 'package:free_reader/database/bible_database.dart';
 import 'package:free_reader/database/user_database.dart';
 
 class RecentReading {
   const RecentReading({
     required this.progress,
-    required this.book,
+    required this.resource,
+    this.bookName,
   });
 
   final ReadingProgressRecord progress;
-  final BibleBookRecord? book;
+  final ResourceRecord resource;
+  final String? bookName;
 
   String get title {
-    final bookName = book?.fullName ?? '圣经';
-    return '$bookName ${progress.chapterSn}:${progress.verseSn}';
+    final prefix = bookName ?? resource.name;
+    return '$prefix ${progress.chapterSn}:${progress.verseSn}';
   }
 }

@@ -7,7 +7,7 @@ class AppDimens {
   static const double readerLineHeight = 1.8;
   static const double verseNumberSize = 28;
   static const double verseSpacing = 20;
-  static const double appBarHeight = 76;
+  static const double appBarHeight = 44;
   static const double bottomBarHeight = 56;
   static const double bottomSheetRadius = 28;
   static const double indexPadding = 18;

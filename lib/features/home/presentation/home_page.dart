@@ -68,6 +68,7 @@ class _RecentReadingCard extends StatelessWidget {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => ReaderPage(
+                  resourceId: value.progress.resourceId,
                   initialVolumeSn: value.progress.volumeSn,
                   initialChapterSn: value.progress.chapterSn,
                   initialVerseSn: value.progress.verseSn,
