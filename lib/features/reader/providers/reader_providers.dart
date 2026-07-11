@@ -4,8 +4,10 @@ import 'package:free_reader/database/user_database.dart';
 import 'package:free_reader/features/reader/data/reading_progress_repository.dart';
 import 'package:free_reader/features/reader/data/resource_reader_factory.dart';
 import 'package:free_reader/features/reader/data/tts_service.dart';
+import 'package:free_reader/features/resources/data/file_picker_service.dart';
 import 'package:free_reader/features/resources/data/path_launcher_service.dart';
 import 'package:free_reader/features/resources/data/resource_export_service.dart';
+import 'package:free_reader/features/resources/data/resource_import_service.dart';
 import 'package:free_reader/features/resources/data/resource_repository.dart';
 
 final resourceRepositoryProvider = Provider<ResourceRepository>((ref) {
@@ -18,6 +20,17 @@ final resourcesProvider = StreamProvider<List<ResourceRecord>>((ref) {
 
 final resourceExportServiceProvider = Provider<ResourceExportService>((ref) {
   return ResourceExportService(ref.watch(userDatabaseProvider));
+});
+
+final resourceImportServiceProvider = Provider<ResourceImportService>((ref) {
+  return ResourceImportService(
+    resourceRepository: ref.watch(resourceRepositoryProvider),
+    filePickerService: ref.watch(filePickerServiceProvider),
+  );
+});
+
+final filePickerServiceProvider = Provider<FilePickerService>((ref) {
+  return const FilePickerService();
 });
 
 final exportRecordsProvider = StreamProvider<List<ExportRecord>>((ref) {

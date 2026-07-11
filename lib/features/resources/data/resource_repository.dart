@@ -45,6 +45,83 @@ class ResourceRepository {
     return DatabasePaths.fileForResourcePath(resource.filePath);
   }
 
+  Future<ResourceRecord> registerImportedResource({
+    required String name,
+    required String resourceType,
+    required String fileFormat,
+    required String filePath,
+    required int fileSize,
+  }) async {
+    final now = DateTime.now();
+    final id = _resourceId(resourceType, name, now);
+    final companion = ResourcesCompanion.insert(
+      id: id,
+      name: name,
+      resourceType: resourceType,
+      fileFormat: fileFormat,
+      filePath: filePath,
+      fileSize: Value(fileSize),
+      createdAt: now,
+      updatedAt: now,
+      allowExport: const Value(true),
+    );
+
+    await _database.into(_database.resources).insert(companion);
+    final resource = await getResource(id);
+    if (resource == null) {
+      throw StateError('Imported resource could not be loaded.');
+    }
+    return resource;
+  }
+
+  Future<void> renameResource({
+    required String resourceId,
+    required String name,
+  }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError('Resource name cannot be empty.');
+    }
+
+    await (_database.update(_database.resources)
+          ..where((resource) => resource.id.equals(resourceId)))
+        .write(
+      ResourcesCompanion(
+        name: Value(trimmed),
+        updatedAt: Value(DateTime.now()),
+      ),
+    );
+  }
+
+  Future<void> deleteResource(ResourceRecord resource) async {
+    if (resource.id == ResourceConstants.builtinBibleId) {
+      throw StateError('The built-in Bible cannot be deleted.');
+    }
+
+    await _database.transaction(() async {
+      await (_database.delete(_database.readingProgress)
+            ..where((progress) => progress.resourceId.equals(resource.id)))
+          .go();
+      await (_database.delete(_database.bookmarks)
+            ..where((bookmark) => bookmark.resourceId.equals(resource.id)))
+          .go();
+      await (_database.delete(_database.favorites)
+            ..where((favorite) => favorite.resourceId.equals(resource.id)))
+          .go();
+      await (_database.delete(_database.highlights)
+            ..where((highlight) => highlight.resourceId.equals(resource.id)))
+          .go();
+      await (_database.delete(_database.resources)
+            ..where((candidate) => candidate.id.equals(resource.id)))
+          .go();
+    });
+
+    final file = await fileFor(resource);
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
+
   Future<void> ensureBuiltInResources() async {
     final file = await DatabasePaths.builtinBibleResourceFile();
     if (!await file.exists()) {
@@ -92,5 +169,14 @@ class ResourceRepository {
     );
 
     await _database.into(_database.resources).insertOnConflictUpdate(companion);
+  }
+
+  String _resourceId(String resourceType, String name, DateTime now) {
+    final slug = name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    final safeSlug = slug.isEmpty ? 'resource' : slug;
+    return '${resourceType.toLowerCase()}-$safeSlug-${now.microsecondsSinceEpoch}';
   }
 }

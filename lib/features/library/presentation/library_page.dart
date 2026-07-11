@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:free_reader/database/user_database.dart';
+import 'package:free_reader/features/reader/presentation/generic_resource_reader_page.dart';
 import 'package:free_reader/features/reader/presentation/reader_page.dart';
 import 'package:free_reader/features/reader/providers/reader_providers.dart';
+import 'package:free_reader/features/resources/domain/resource_constants.dart';
 
 class LibraryPage extends ConsumerStatefulWidget {
   const LibraryPage({super.key});
@@ -12,7 +14,8 @@ class LibraryPage extends ConsumerStatefulWidget {
 }
 
 class _LibraryPageState extends ConsumerState<LibraryPage> {
-  String? _exportingResourceId;
+  String? _busyResourceId;
+  bool _importing = false;
 
   @override
   Widget build(BuildContext context) {
@@ -21,9 +24,21 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
 
     return CustomScrollView(
       slivers: [
-        const SliverAppBar(
-          title: Text('书架'),
+        SliverAppBar(
+          title: const Text('书架'),
           floating: true,
+          actions: [
+            IconButton(
+              tooltip: '导入资源',
+              onPressed: _importing ? null : _importResource,
+              icon: _importing
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.add_circle_outline),
+            ),
+          ],
         ),
         SliverPadding(
           padding: const EdgeInsets.all(16),
@@ -39,9 +54,14 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                       for (final resource in value) ...[
                         _ResourceTile(
                           resource: resource,
-                          exporting: _exportingResourceId == resource.id,
+                          busy: _busyResourceId == resource.id,
                           onOpen: () => _openResource(resource),
                           onExport: () => _exportResource(resource),
+                          onRename: () => _renameResource(resource),
+                          onDelete:
+                              resource.id == ResourceConstants.builtinBibleId
+                                  ? null
+                                  : () => _deleteResource(resource),
                         ),
                         const SizedBox(height: 12),
                       ],
@@ -74,33 +94,82 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     );
   }
 
+  Future<void> _importResource() async {
+    setState(() => _importing = true);
+    try {
+      final resource =
+          await ref.read(resourceImportServiceProvider).pickAndImport();
+      if (!mounted || resource == null) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导入：${resource.name}')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败：$error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _importing = false);
+      }
+    }
+  }
+
   Future<void> _openResource(ResourceRecord resource) async {
-    final progress = await ref
-        .read(readingProgressRepositoryProvider)
-        .getProgressForResource(resource.id);
+    try {
+      ref.read(resourceReaderFactoryProvider).create(resource);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('暂不支持打开：${resource.fileFormat}')),
+      );
+      return;
+    }
+
     if (!mounted) {
+      return;
+    }
+
+    if (resource.resourceType == 'BIBLE' && resource.fileFormat == 'SQLITE') {
+      final progress = await ref
+          .read(readingProgressRepositoryProvider)
+          .getProgressForResource(resource.id);
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ReaderPage(
+            resourceId: resource.id,
+            initialVolumeSn: progress?.volumeSn ?? 1,
+            initialChapterSn: progress?.chapterSn ?? 1,
+            initialVerseSn: progress?.verseSn ?? 1,
+            initialScrollOffset: progress?.scrollOffset ?? 0,
+          ),
+        ),
+      );
       return;
     }
 
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => ReaderPage(
-          resourceId: resource.id,
-          initialVolumeSn: progress?.volumeSn ?? 1,
-          initialChapterSn: progress?.chapterSn ?? 1,
-          initialVerseSn: progress?.verseSn ?? 1,
-          initialScrollOffset: progress?.scrollOffset ?? 0,
-        ),
+        builder: (_) => GenericResourceReaderPage(resourceId: resource.id),
       ),
     );
   }
 
   Future<void> _exportResource(ResourceRecord resource) async {
-    if (_exportingResourceId != null) {
+    if (_busyResourceId != null) {
       return;
     }
 
-    setState(() => _exportingResourceId = resource.id);
+    setState(() => _busyResourceId = resource.id);
     try {
       final record = await ref
           .read(resourceExportServiceProvider)
@@ -126,7 +195,92 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
       );
     } finally {
       if (mounted) {
-        setState(() => _exportingResourceId = null);
+        setState(() => _busyResourceId = null);
+      }
+    }
+  }
+
+  Future<void> _renameResource(ResourceRecord resource) async {
+    final controller = TextEditingController(text: resource.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('重命名资源'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: '资源名称'),
+            onSubmitted: (value) => Navigator.of(context).pop(value),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(controller.text),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+
+    if (name == null || name.trim().isEmpty) {
+      return;
+    }
+
+    await ref.read(resourceRepositoryProvider).renameResource(
+          resourceId: resource.id,
+          name: name,
+        );
+  }
+
+  Future<void> _deleteResource(ResourceRecord resource) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('删除 ${resource.name}？'),
+          content: const Text('只会删除这一个资源及它自己的阅读数据，不会影响其他资源。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+
+    setState(() => _busyResourceId = resource.id);
+    try {
+      await ref.read(resourceRepositoryProvider).deleteResource(resource);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除：${resource.name}')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('删除失败：$error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _busyResourceId = null);
       }
     }
   }
@@ -147,15 +301,19 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
 class _ResourceTile extends StatelessWidget {
   const _ResourceTile({
     required this.resource,
-    required this.exporting,
+    required this.busy,
     required this.onOpen,
     required this.onExport,
+    required this.onRename,
+    required this.onDelete,
   });
 
   final ResourceRecord resource;
-  final bool exporting;
+  final bool busy;
   final VoidCallback onOpen;
   final VoidCallback onExport;
+  final VoidCallback onRename;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -164,9 +322,9 @@ class _ResourceTile extends StatelessWidget {
         leading: Icon(_iconFor(resource.resourceType)),
         title: Text(resource.name),
         subtitle: Text(
-          '${resource.resourceType} · ${resource.fileFormat} · ${_formatSize(resource.fileSize)}',
+          '${_typeLabel(resource.resourceType)} · ${resource.fileFormat} · ${_formatSize(resource.fileSize)}',
         ),
-        trailing: exporting
+        trailing: busy
             ? const SizedBox.square(
                 dimension: 24,
                 child: CircularProgressIndicator(strokeWidth: 2),
@@ -176,16 +334,35 @@ class _ResourceTile extends StatelessWidget {
                   switch (action) {
                     case _ResourceAction.export:
                       onExport();
+                    case _ResourceAction.rename:
+                      onRename();
+                    case _ResourceAction.delete:
+                      onDelete?.call();
                   }
                 },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
                     value: _ResourceAction.export,
                     child: ListTile(
                       leading: Icon(Icons.ios_share_outlined),
                       title: Text('导出这本书'),
                     ),
                   ),
+                  const PopupMenuItem(
+                    value: _ResourceAction.rename,
+                    child: ListTile(
+                      leading: Icon(Icons.drive_file_rename_outline),
+                      title: Text('重命名'),
+                    ),
+                  ),
+                  if (onDelete != null)
+                    const PopupMenuItem(
+                      value: _ResourceAction.delete,
+                      child: ListTile(
+                        leading: Icon(Icons.delete_outline),
+                        title: Text('删除'),
+                      ),
+                    ),
                 ],
               ),
         onTap: onOpen,
@@ -201,6 +378,18 @@ class _ResourceTile extends StatelessWidget {
       'PDF' => Icons.picture_as_pdf_outlined,
       'TXT' || 'MARKDOWN' => Icons.article_outlined,
       _ => Icons.auto_stories_outlined,
+    };
+  }
+
+  String _typeLabel(String resourceType) {
+    return switch (resourceType) {
+      'BIBLE' => '圣经',
+      'HYMN' => '诗歌',
+      'EPUB' => 'EPUB',
+      'PDF' => 'PDF',
+      'TXT' => 'TXT',
+      'MARKDOWN' => 'Markdown',
+      _ => '其他',
     };
   }
 
@@ -332,4 +521,4 @@ class _LibraryErrorTile extends StatelessWidget {
   }
 }
 
-enum _ResourceAction { export }
+enum _ResourceAction { export, rename, delete }

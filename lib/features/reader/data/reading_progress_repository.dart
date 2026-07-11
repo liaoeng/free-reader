@@ -64,4 +64,22 @@ class ReadingProgressRepository {
           companion,
         );
   }
+
+  Future<void> saveGenericProgress({
+    required String resourceId,
+    required String locator,
+    required int catalogIndex,
+    double scrollOffset = 0,
+    double progressPercent = 0,
+  }) {
+    return saveProgress(
+      resourceId: resourceId,
+      locator: locator,
+      volumeSn: 1,
+      chapterSn: catalogIndex + 1,
+      verseSn: 1,
+      scrollOffset: scrollOffset,
+      progressPercent: progressPercent,
+    );
+  }
 }

@@ -372,10 +372,42 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       return;
     }
 
-    final startVerseSn = _findVerseNearViewportCenter() ??
+    final currentVerseSn = _findVerseNearViewportCenter() ??
         _estimateVisibleVerse(
           _scrollController.hasClients ? _scrollController.offset : 0,
         );
+    final startVerseSn = await _showReadAloudStartPicker(
+      chapter: chapter,
+      currentVerseSn: currentVerseSn,
+    );
+    if (startVerseSn == null) {
+      return;
+    }
+
+    await _startReadAloudFrom(chapter, startVerseSn);
+  }
+
+  Future<int?> _showReadAloudStartPicker({
+    required _ReaderChapter chapter,
+    required int currentVerseSn,
+  }) {
+    return showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return _ReadAloudStartSheet(
+          verses: chapter.verses,
+          currentVerseSn: currentVerseSn,
+        );
+      },
+    );
+  }
+
+  Future<void> _startReadAloudFrom(
+    _ReaderChapter chapter,
+    int startVerseSn,
+  ) async {
+    final tts = ref.read(ttsServiceProvider);
     _verseSn = startVerseSn;
     await _saveProgressNow();
 
@@ -395,6 +427,16 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     if (mounted) {
       setState(() => _isSpeaking = true);
     }
+  }
+
+  Future<void> _startReadAloudFromVerseLine(
+    _ReaderChapter chapter,
+    int verseSn,
+  ) async {
+    if (_isSpeaking) {
+      await ref.read(ttsServiceProvider).stop();
+    }
+    await _startReadAloudFrom(chapter, verseSn);
   }
 
   void _handleTtsProgress(TtsProgress progress) {
@@ -526,6 +568,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                             verses: chapter.verses,
                             verseKeys: _verseKeys,
                             fontSize: fontSize,
+                            onReadFromVerse: (verseSn) =>
+                                _startReadAloudFromVerseLine(chapter, verseSn),
                           ),
                         ),
                       ),
@@ -614,11 +658,13 @@ class _VerseColumn extends StatelessWidget {
     required this.verses,
     required this.verseKeys,
     required this.fontSize,
+    required this.onReadFromVerse,
   });
 
   final List<BibleVerseRecord> verses;
   final Map<int, GlobalKey> verseKeys;
   final double fontSize;
+  final ValueChanged<int> onReadFromVerse;
 
   @override
   Widget build(BuildContext context) {
@@ -629,6 +675,7 @@ class _VerseColumn extends StatelessWidget {
             key: verseKeys[verse.verseSn],
             verse: verse,
             fontSize: fontSize,
+            onReadFromVerse: onReadFromVerse,
           ),
           if (verse != verses.last)
             const SizedBox(height: AppDimens.verseSpacing),
@@ -643,48 +690,140 @@ class _VerseLine extends StatelessWidget {
     super.key,
     required this.verse,
     required this.fontSize,
+    required this.onReadFromVerse,
   });
 
   final BibleVerseRecord verse;
   final double fontSize;
+  final ValueChanged<int> onReadFromVerse;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: AppDimens.verseNumberSize,
-          height: AppDimens.verseNumberSize,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: colorScheme.primary.withValues(alpha: 0.10),
-            shape: BoxShape.circle,
-          ),
-          child: Text(
-            '${verse.verseSn}',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: colorScheme.primary,
-                  fontWeight: FontWeight.w700,
-                  height: 1,
-                ),
-          ),
-        ),
-        const SizedBox(width: 18),
-        Expanded(
-          child: Text(
-            verse.lection ?? '',
-            style: TextStyle(
-              color: colorScheme.onSurface,
-              fontSize: fontSize,
-              height: AppDimens.readerLineHeight,
-              letterSpacing: 0,
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPress: () => onReadFromVerse(verse.verseSn),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: AppDimens.verseNumberSize,
+            height: AppDimens.verseNumberSize,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: colorScheme.primary.withValues(alpha: 0.10),
+              shape: BoxShape.circle,
+            ),
+            child: Text(
+              '${verse.verseSn}',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w700,
+                    height: 1,
+                  ),
             ),
           ),
+          const SizedBox(width: 18),
+          Expanded(
+            child: Text(
+              verse.lection ?? '',
+              style: TextStyle(
+                color: colorScheme.onSurface,
+                fontSize: fontSize,
+                height: AppDimens.readerLineHeight,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReadAloudStartSheet extends StatelessWidget {
+  const _ReadAloudStartSheet({
+    required this.verses,
+    required this.currentVerseSn,
+  });
+
+  final List<BibleVerseRecord> verses;
+  final int currentVerseSn;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '选择开始朗读的小节',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.of(context).pop(currentVerseSn),
+                icon: const Icon(Icons.my_location_outlined),
+                label: Text('从当前可见节开始：$currentVerseSn'),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Flexible(
+              child: GridView.builder(
+                shrinkWrap: true,
+                itemCount: verses.length,
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 56,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                ),
+                itemBuilder: (context, index) {
+                  final verseSn = verses[index].verseSn;
+                  final selected = verseSn == currentVerseSn;
+
+                  return Material(
+                    color: selected
+                        ? colorScheme.primary
+                        : colorScheme.surfaceContainerLow,
+                    shape: CircleBorder(
+                      side: selected
+                          ? BorderSide.none
+                          : BorderSide(color: colorScheme.outlineVariant),
+                    ),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: () => Navigator.of(context).pop(verseSn),
+                      child: Center(
+                        child: Text(
+                          '$verseSn',
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: selected
+                                        ? colorScheme.onPrimary
+                                        : colorScheme.onSurface,
+                                    fontWeight: selected
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                  ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

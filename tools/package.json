@@ -1,0 +1,11 @@
+{
+  "name": "free-reader-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scrape:hymn1218": "node scrape_hymn_1218.mjs --out ../hymn.db"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
